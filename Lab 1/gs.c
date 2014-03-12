@@ -12,6 +12,7 @@
 
 /***** Globals ******/
 float **a; /* The coefficients */
+float *a_row; /* The coefficients of one row of a */
 float *x;  /* The unknowns */
 float *x_old; /* Old value of unknowns */
 float *b;  /* The constants */
@@ -38,23 +39,14 @@ a, b and x */
 
 void allocate_matrices_slave()
 {
-  int i;
+  /* Keeping double pointer for simplicity - no need to rewrite calculations
+  for master process in get_new_x() function */
 
-  a = (float**)malloc(num * sizeof(float*));
-  if( !a)
+  a_row = (float *)malloc(num * sizeof(float));
+  if( !a_row)
   {
     printf("Cannot allocate a!\n");
     exit(1);
-  }
-
-  for(i = 0; i < num; i++)
-  {
-    a[i] = (float *)malloc(num * sizeof(float));
-    if( !a[i])
-    {
-      printf("Cannot allocate a[%d]!\n",i);
-      exit(1);
-    }
   }
 
   x = (float *) malloc(num * sizeof(float));
@@ -203,9 +195,23 @@ float get_new_x(int rank)
   int j;
   for (j = 0; j < num; j++)
     if (rank != j)
-      sum += a[rank][j]*x[j];
+    {
+      if (rank == MASTER)
+      {
+        sum += a[MASTER][j]*x[j];
+      } else
+      {
+        sum += a_row[j]*x[j];
+      }
+    }
 
-  return (b[rank]-sum)/a[rank][rank];
+  if (rank == MASTER)
+  {
+    return (b[rank]-sum)/a[MASTER][MASTER];
+  } else
+  {
+    return (b[rank]-sum)/a_row[rank];
+  }
 }
 
 
@@ -254,7 +260,14 @@ int main(int argc, char *argv[])
     printf("\n");
 
     for (i = 1; i<comm_sz; i++)
+    {
       MPI_Send(&num, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+      MPI_Send(a[i], num, MPI_FLOAT, i, 1, MPI_COMM_WORLD);
+    }
+
+    // Allocate x_old variable for calculating absolute error in master process
+
+    x_old = (float *) malloc(num * sizeof(float));
 
   } else
   {
@@ -268,13 +281,9 @@ int main(int argc, char *argv[])
 
     allocate_matrices_slave();
 
-  }
+    MPI_Recv(a_row, num, MPI_FLOAT, MASTER, 1, MPI_COMM_WORLD,
+      MPI_STATUS_IGNORE);
 
-  x_old = (float *) malloc(num * sizeof(float));
-
-  for (i = 0; i<num; i++)
-  {
-    MPI_Bcast(a[i], num, MPI_FLOAT, MASTER,  MPI_COMM_WORLD);
   }
 
   MPI_Bcast(b, num, MPI_FLOAT, MASTER, MPI_COMM_WORLD);
@@ -284,10 +293,10 @@ int main(int argc, char *argv[])
   while (error_flag)
   {
     MPI_Bcast(x, num, MPI_FLOAT, MASTER, MPI_COMM_WORLD);
-    memcpy(x_old, x, num * sizeof(float));
 
     if (IS_MASTER)
     {
+      memcpy(x_old, x, num * sizeof(float));
       nit++;
       x[0] = get_new_x(MASTER);
       for (i = 1; i < num; i++)
@@ -300,17 +309,12 @@ int main(int argc, char *argv[])
 
     if (IS_MASTER)
     {
-      if (nit > 11 && nit < 22)
-      {
-        printf("After %d iterations X guess", nit);
-        for (i = 0; i < num; i++)
-          printf(" %f", x[i]);
-        printf("\n");
-      }
+      printf("%d)", nit);
+      for (i = 0; i < num; i++)
+        printf(" %f", x[i]);
+      printf("\n");
       error_flag = check_error();
     }
-
-    check_matrix();
 
     MPI_Bcast(&error_flag, 1, MPI_INT, MASTER, MPI_COMM_WORLD);
 
