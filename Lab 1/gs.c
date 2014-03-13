@@ -280,6 +280,7 @@ int main(int argc, char *argv[])
     rows_num = num / comm_sz;
     if (my_rank < num % comm_sz)
       rows_num++;
+    printf("p%d: %drows_num\n", my_rank, rows_num);
     MPI_Comm_create (MPI_COMM_WORLD, world_group, &my_comm);
   } else
   {
