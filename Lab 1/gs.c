@@ -1,3 +1,7 @@
+/* Oleg Grishin, NYU, 2014
+  Parallel Computing, CSCI-UA.0480-003
+  Remark: works for any p (including p's that aren't power of 2) */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,7 +12,6 @@
 
 #define MASTER 0
 #define IS_MASTER my_rank == MASTER
-
 
 /***** Globals ******/
 float *a; /* The coefficients */
@@ -25,7 +28,7 @@ slave processes */
 int check_error(); /* Check absolute relative error */
 void check_matrix(); /* Check whether the matrix will converge */
 void get_input();  /* Read input from file */
-float get_new_x(float *row, int entry_num); /* pass pointer to what row to read
+float get_new_x(float *row, int entry_num, int my_rank); /* pass pointer to what row to read
 from, pass what entry it is (for i!=j comparison) and get x back */
 
 /********************************/
@@ -188,7 +191,7 @@ void get_input(char filename[])
 
 
 // Calculates new value of x
-float get_new_x(float *row, int entry)
+float get_new_x(float *row, int entry, int my_rank)
 {
   // value of the sum present in the formula
   float sum = 0;
@@ -196,7 +199,14 @@ float get_new_x(float *row, int entry)
   for (j = 0; j < num; j++)
     if (entry != j)
     {
-      sum += row[j]*x[j];
+      if (IS_MASTER)
+      {
+        // Since we rewrite x we need to use old values on master process
+        sum += row[j]*x_old[j];
+      } else
+      {
+        sum += row[j]*x[j];
+      }
     }
 
   return (b[entry]-sum)/row[entry];
@@ -255,11 +265,6 @@ int main(int argc, char *argv[])
     // Check if the matrix will converge
     check_matrix();
 
-    printf("Initial X guess");
-    for (i = 0; i < num; i++)
-      printf(" %f", x[i]);
-    printf("\n");
-
     // Send num variable to all the processes
     for (i = 1; i<comm_sz; i++)
       MPI_Send(&num, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
@@ -280,7 +285,6 @@ int main(int argc, char *argv[])
     rows_num = num / comm_sz;
     if (my_rank < num % comm_sz)
       rows_num++;
-    printf("p%d: %drows_num\n", my_rank, rows_num);
     MPI_Comm_create (MPI_COMM_WORLD, world_group, &my_comm);
   } else
   {
@@ -292,7 +296,7 @@ int main(int argc, char *argv[])
 
     if (my_rank >= num)
     {
-      printf("Process %d exited, because num is %d\n", my_rank, num);
+      // Quit processes that are not necessery
       MPI_Finalize();
       exit(0);
     }
@@ -304,13 +308,15 @@ int main(int argc, char *argv[])
   // Used to map entry number back to processes
   int process_offsets[comm_sz];
 
-
-  // printf("For process %d, the comm_sz if %d, num is %d\n", my_rank, comm_sz, num);
-
   if (IS_MASTER)
   {
-    int new_rows_num = 0;
+    int new_rows_num = num / comm_sz;
+    if (num % comm_sz > 0)
+    {
+      new_rows_num++;
+    }
     int new_rows_num_each = 0;
+    process_offsets[0] = new_rows_num;
 
     /* If num > comm_sz, then we need to distribute several rows for each
     process; else we need to distribute rows to num processes */
@@ -332,16 +338,15 @@ int main(int argc, char *argv[])
 
         new_rows_num += new_rows_num_each;
 
-        process_offsets[i-1] = new_rows_num;
+        process_offsets[i] = new_rows_num;
 
-        MPI_Send(&a[new_rows_num], num*new_rows_num_each,
+        MPI_Send(&a[process_offsets[i-1]*num], num*new_rows_num_each,
           MPI_FLOAT, i, 0, my_comm);
       }
     } else
     {
       for (i = 1; i<comm_sz; i++)
       {
-        // printf("For process %d, sent to %d, data1: %f, data2:%f\n", my_rank, i, a[i*num], a[i*num+1]);
         MPI_Send(&a[i*num], num, MPI_FLOAT, i, 0, my_comm);
       }
     }
@@ -361,18 +366,16 @@ int main(int argc, char *argv[])
 
     if (num > comm_sz)
     {
-      for (i = 1; i < comm_sz; i++)
-      {
-        MPI_Recv(a, num * rows_num, MPI_FLOAT, MASTER, 0, my_comm,
-          MPI_STATUS_IGNORE);
-      }
+      // Receive several X's
+
+      MPI_Recv(a, num * rows_num, MPI_FLOAT, MASTER, 0, my_comm,
+        MPI_STATUS_IGNORE);
 
     } else
     {
-      // printf("For process %d, recieved\n", my_rank);
-      MPI_Recv(a, num, MPI_FLOAT, MASTER, 0, my_comm,
-        MPI_STATUS_IGNORE);
-      // printf("For process %d, a1 is %f, a5 is %f\n", my_rank, a[0], a[4]);
+      // Receive one X
+
+      MPI_Recv(a, num, MPI_FLOAT, MASTER, 0, my_comm, MPI_STATUS_IGNORE);
     }
 
     // Calculate my_entry offset for i!=j computations
@@ -388,11 +391,14 @@ int main(int argc, char *argv[])
         }
       }
     }
+
   }
+
+  // Send value of b to all the processes
 
   MPI_Bcast(b, num, MPI_FLOAT, MASTER, my_comm);
 
-  printf("Received all input for %d\n", my_rank);
+  // Error flag is one if one of the x's is not within the limits
 
   while (error_flag)
   {
@@ -400,6 +406,7 @@ int main(int argc, char *argv[])
 
     if (IS_MASTER)
     {
+      // Copy new x into x_old for easier calculations for error_flag
       memcpy(x_old, x, num * sizeof(float));
       nit++;
     }
@@ -411,10 +418,12 @@ int main(int argc, char *argv[])
       {
         if (IS_MASTER)
         {
-          x[i] = get_new_x(&a[i], i);
+          // Compute X's that main processor is assigned
+          x[i] = get_new_x(&a[i*num], i, MASTER);
         } else
         {
-          new_x = get_new_x(&a[i*num], my_entry_offset+i);
+          // Send all new X's back to MASTER. Use tag for ordering
+          new_x = get_new_x(&a[i*num], my_entry_offset+i, my_rank);
           MPI_Send(&new_x, 1, MPI_FLOAT, MASTER, my_entry_offset+i,
             my_comm);
         }
@@ -423,12 +432,13 @@ int main(int argc, char *argv[])
     {
       if (IS_MASTER)
       {
-        x[MASTER] = get_new_x(&a[MASTER], MASTER);
-        // printf("New value for x is %f\n", x[MASTER]);
+        // Compute x on MASTER
+        x[MASTER] = get_new_x(&a[MASTER], MASTER, MASTER);
       } else
       {
-        new_x = get_new_x(a, my_rank);
-        // printf("New value for x is %f\n", new_x);
+        // Compute x on slaves and send to master
+        new_x = get_new_x(a, my_rank, my_rank);
+        MPI_Send(&new_x, 1, MPI_FLOAT, MASTER, 0, my_comm);
       }
     }
 
@@ -436,15 +446,15 @@ int main(int argc, char *argv[])
     {
       if (num > comm_sz)
       {
-        int process = 0;
-        for (i = rows_num; i <= num; i++)
+        int process = 1;
+        for (i = rows_num; i < num; i++)
         {
           int j;
           for (j = 0; j < comm_sz; j++)
           {
-            if (i <= process_offsets[j])
+            if (i >= process_offsets[j])
             {
-              process = j;
+              process = j+1;
             }
           }
           MPI_Recv(&x[i], 1, MPI_FLOAT, process, i, my_comm, MPI_STATUS_IGNORE);
@@ -455,37 +465,27 @@ int main(int argc, char *argv[])
           MPI_Recv(&x[i], 1, MPI_FLOAT, i, 0, my_comm, MPI_STATUS_IGNORE);
       }
 
-    } else
-    {
-      MPI_Send(&new_x, 1, MPI_FLOAT, MASTER, 0, my_comm);
     }
 
     if (IS_MASTER)
-    {
-      printf("%d)", nit);
-      for (i = 0; i < num; i++)
-        printf(" %f", x[i]);
-      printf("\n");
       error_flag = check_error();
-    }
 
+    // Broadcast error flag back to slaves
     MPI_Bcast(&error_flag, 1, MPI_INT, MASTER, my_comm);
 
   }
 
   /* Writing to the stdout */
   /* Keep that same format */
-  if (IS_MASTER)
-  {
-    for( i = 0; i < num; i++)
-      printf("%f\n", x[i]);
+  // if (IS_MASTER)
+  // {
+  //   for( i = 0; i < num; i++)
+  //     printf("%f\n", x[i]);
+  //
+  //   printf("total number of iterations: %d\n", nit);
+  // }
 
-    printf("total number of iterations: %d\n", nit);
-  }
-
-  // printf("Before finalize of process %d\n", my_rank);
   MPI_Finalize();
-  // printf("After finalize of process %d\n", my_rank);
 
   exit(0);
 
