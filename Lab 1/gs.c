@@ -477,13 +477,13 @@ int main(int argc, char *argv[])
 
   /* Writing to the stdout */
   /* Keep that same format */
-  // if (IS_MASTER)
-  // {
-  //   for( i = 0; i < num; i++)
-  //     printf("%f\n", x[i]);
-  //
-  //   printf("total number of iterations: %d\n", nit);
-  // }
+  if (IS_MASTER)
+  {
+    for( i = 0; i < num; i++)
+      printf("%f\n", x[i]);
+
+    printf("total number of iterations: %d\n", nit);
+  }
 
   MPI_Finalize();
 
