@@ -179,7 +179,7 @@ int main(int argc, char *argv[])
 
   get_input(argv[1]);
 
-  omp_set_num_threads(num-1);
+  omp_set_num_threads(1);
 
   int i;
 
