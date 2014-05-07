@@ -4,9 +4,9 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
+#include <time.h> 
 
-#define SIZE 65536
+#define SIZE 8192
 
 /* Function declarations */
 void fill_array(int* a); /* Fills array with random ints */
